@@ -28,6 +28,7 @@ cursor = conn.cursor()
 
 # List of columns exactly matching the init.sql table definition.
 # oracle_id is the primary key and is not updated.
+# "card_faces" is included to store multiface card details.
 columns = [
     "oracle_id",  # primary key
     "id",
@@ -96,7 +97,8 @@ columns = [
     "preview",
     "prices",
     "related_uris",
-    "purchase_uris"
+    "purchase_uris",
+    "card_faces"
 ]
 
 def parse_date(date_str):
@@ -110,9 +112,21 @@ def parse_date(date_str):
 
 def process_card(card):
     """
-    Process a card JSON object to prepare it for database insertion.
-    Converts the released_at field and wraps dictionaries/lists in psycopg2.extras.Json for JSONB columns.
+    Process a card JSON object for database insertion.
+    - Converts released_at to a date.
+    - If the card has multiple faces (card_faces) and no top-level image_uris,
+      aggregates image URLs from each face into a list and sets it to image_uris.
+    - Wraps dictionaries/lists in psycopg2.extras.Json for JSONB columns.
     """
+    # If multifaced and no top-level image_uris, aggregate them from each face.
+    if "card_faces" in card and not card.get("image_uris"):
+        aggregated = []
+        for face in card["card_faces"]:
+            if "image_uris" in face:
+                aggregated.append(face["image_uris"])
+        if aggregated:
+            card["image_uris"] = aggregated
+
     processed = {}
     for col in columns:
         val = card.get(col)

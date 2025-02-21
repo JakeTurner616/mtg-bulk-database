@@ -1,23 +1,27 @@
 # mtg-bulk-database
 
-Simple MTG (Magic the Gathering) database implementation using Scryfall’s Oracle Cards bulk data JSON to PostgreSQL.
+Simple MTG (Magic: The Gathering) database implementation using Scryfall’s Oracle Cards bulk data JSON to PostgreSQL.
 
 ## Overview
 
-The `mtg-bulk-database` script is a data science utility base that:
+The `mtg-bulk-database` script is a data science utility that:
 
 - Queries the Scryfall Bulk Data API for the latest Oracle Cards JSON file.
-- Checks if a local copy of the file is up-to-date based on the Scyfal server’s `updated_at` timestamp.
+- Checks if a local copy of the file is up-to-date based on the Scryfall server’s `updated_at` timestamp.
 - Downloads the JSON file (if necessary) and sets its modification time to match the server.
 - Streams and processes the JSON file with low memory overhead using `ijson`.
 - Performs a bulk upsert into a PostgreSQL database using an UPSERT (ON CONFLICT) clause that updates only changed fields.
+- Supports multifaced cards by:
+  - Storing detailed multiface information in a dedicated `card_faces` JSONB column.
+  - Aggregating image URLs from individual faces if the top-level image URLs are absent.
 - Requires that the database table has a unique constraint (primary key) on the `oracle_id` column.
 
 ## SQL Schema
 
-Below is the 1:1 Scryfall bulk data json to an SQL schema that the utility will use. [Scryfall Types & Methods docs](https://scryfall.com/docs/api/bulk-data)
+Below is the 1:1 Scryfall bulk data JSON to an SQL schema that the utility will use.  
+[Scryfall Types & Methods docs](https://scryfall.com/docs/api/bulk-data)
 
-```mtg-database/init.sql
+```sql
 DROP TABLE IF EXISTS cards;
 CREATE TABLE cards (
     oracle_id UUID PRIMARY KEY,
@@ -87,9 +91,19 @@ CREATE TABLE cards (
     preview JSONB,
     prices JSONB,
     related_uris JSONB,
-    purchase_uris JSONB
+    purchase_uris JSONB,
+    card_faces JSONB
 );
 ```
+
+*Note: The new `card_faces` column stores the multiface card details (e.g., for split, transform, or modal DFC cards).*
+
+### Multifaced Cards
+
+Scryfall Multifaced cards with a `card_faces` array containing one object per face. This script must:
+
+- Add a new `card_faces` column (of type JSONB) to store the multiface data.
+- In cases where a multifaced card lacks a top-level `image_uris`, aggregates image URLs from each face into `image_uris`.
 
 ## Installation
 
@@ -126,19 +140,24 @@ CREATE TABLE cards (
 
 4. **Set Up Your PostgreSQL Database Schema:**
 
-   Run the provided `Dockerfile`. To run a simple PostgreSQL DB instance:
+   Run the provided SQL schema to create the database table. For example, using `psql`:
 
    ```bash
-   cd /mtg-database
-   docker build -t mtg-postgres .
-   docker run -d --name mtg-postgres --env-file .env -p 5432:5432 -v ${PWD}\postgres:/var/lib/postgresql/data mtg-postgres
+   psql -U myuser -d mtgdb -f init.sql
    ```
 
-   *The table has a primary key or unique constraint on `oracle_id`.*
+   *Ensure the table has a primary key (unique constraint) on `oracle_id`.*
+
+5. **(Optional) Run a PostgreSQL Instance using Docker:**
+
+   ```bash
+   docker build -t mtg-postgres .
+   docker run -d --name mtg-postgres --env-file .env -p 5432:5432 -v ${PWD}/postgres:/var/lib/postgresql/data mtg-postgres
+   ```
 
 ## Environment Variables
 
-The script uses a `.env` file to configure the PostgreSQL connection with custom values:
+Create a `.env` file in the project root with your PostgreSQL connection settings:
 
 ```env
 POSTGRES_USER=myuser
@@ -150,7 +169,7 @@ POSTGRES_PORT=5432
 
 ## Usage
 
-Simply run the importer script:
+Run the importer script:
 
 ```bash
 python import_cards.py
@@ -162,13 +181,15 @@ The script will:
 - Check if the local copy (`scryfall-cards.json`) is up-to-date.
 - Download a new copy if the file is outdated.
 - Stream through the JSON file and process each card.
-- Perform a bulk UPSERT into the PostgreSQL database updating only fields that have changed.
+- For multifaced cards, aggregate image URLs from `card_faces` if necessary.
+- Perform a bulk UPSERT into the PostgreSQL database, updating only fields that have changed.
 
-We can now easily run thousands of queries a second on our 'cards' database table for data experimentation.
+This lets you efficiently query thousands of records per second on the `cards` table for data experimentation.
+
 
 ## Author
 
-Developed [Jakob Turner](https://github.com/JakeTurner616).
+Developed by [Jakob Turner](https://github.com/JakeTurner616).
 
 ## License
 

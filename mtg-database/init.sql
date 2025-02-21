@@ -68,5 +68,6 @@ CREATE TABLE cards (
     preview JSONB,
     prices JSONB,
     related_uris JSONB,
-    purchase_uris JSONB
+    purchase_uris JSONB,
+    card_faces JSONB
 );
