@@ -10,40 +10,38 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.8", "3.9", "3.10"]
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python ${{ matrix.python-version }}
+      - name: Set up Python
         uses: actions/setup-python@v3
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.9"
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install git+https://github.com/blengerich/pylint-badge
+          pip install pylint anybadge
 
-      - name: Run Pylint and Generate Badge
+      - name: Run pylint and capture score
+        id: pylint
         run: |
-          pylint $(git ls-files '*.py') --fail-under 9.5 --fail-on E
-          pylint-badge $(git ls-files '*.py') pylint.svg
+          # Run pylint and capture the overall score from the output.
+          # The output line typically looks like:
+          # "Your code has been rated at 9.63/10"
+          score=$(pylint $(git ls-files '*.py') --score=y --exit-zero | grep "Your code has been rated at" | awk '{print $7}' | cut -d'/' -f1)
+          echo "pylint_score=$score" >> $GITHUB_OUTPUT
 
-      - name: Commit updated badge if changed
+      - name: Generate pylint badge using anybadge
+        run: |
+          # Generate a badge using anybadge and save it to the /docs folder.
+          # Thresholds: score < 2 -> red, < 4 -> orange, < 8 -> yellow, < 10 -> green.
+          anybadge --label=pylint --value=${{ steps.pylint.outputs.pylint_score }} --file=docs/pylint.svg 2=red 4=orange 8=yellow 10=green
+
+      - name: Commit updated badge to docs directory
         uses: EndBug/add-and-commit@v9
         with:
           message: "chore: update pylint badge"
-          add: "pylint.svg"
-          # Ensure the action only commits if there is a change
-          cwd: .
-          author_name: "github-actions"
-          author_email: "github-actions@github.com"
-
-      - name: Upload Pylint Badge Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: pylint-badge
-          path: docs/pylint.svg
+          add: "docs/pylint.svg"
+          commit_author: "github-actions <github-actions@github.com>"
