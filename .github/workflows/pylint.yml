@@ -33,7 +33,7 @@ jobs:
       - name: Run lizard and capture average complexity
         id: lizard
         run: |
-          complexity=$(lizard . | grep "Average" | awk '{print $4}')
+          complexity=$(lizard -j . | python -c "import sys, json; print(json.load(sys.stdin).get('total_average_cyclomatic_complexity', 0))")
           echo "complexity=$complexity" >> $GITHUB_OUTPUT
 
       - name: Create docs folder
