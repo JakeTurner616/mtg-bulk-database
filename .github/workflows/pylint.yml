@@ -44,4 +44,4 @@ jobs:
           add: "docs/pylint.svg"
           author_name: "github-actions"
           author_email: "github-actions@github.com"
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          github_token: ${{ secrets.PAT_TOKEN }}
