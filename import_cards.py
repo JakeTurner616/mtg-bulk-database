@@ -1,19 +1,28 @@
 #!/usr/bin/env python3
+"""
+Import Scryfall bulk data into a PostgreSQL database.
+
+This script downloads the specified bulk data (oracle_cards or unique_artwork)
+from Scryfall, processes the JSON with low memory overhead using ijson, and
+performs a bulk UPSERT into the PostgreSQL database. The schema uses the unique
+Scryfall card 'id' as the primary key.
+"""
+
 import os
-import time
+import decimal
+from datetime import datetime, timezone
+
 import requests
 import psycopg2
 import psycopg2.extras
 import ijson
-import decimal
-from datetime import datetime, timezone
 from dotenv import load_dotenv
 
 # ---------------------------
 # CONFIGURATION
 # ---------------------------
 # Set the bulk data type here: "oracle_cards" or "unique_artwork"
-BULK_DATA_TYPE = "oracle_cards"  # or "oracle_cards"
+BULK_DATA_TYPE = "oracle_cards"  # or "unique_artwork"
 
 # Load DB configuration from .env
 load_dotenv(dotenv_path=os.path.join(os.getcwd(), "mtg-database", ".env"))
@@ -113,12 +122,20 @@ def parse_date(date_str):
         return None
     try:
         return datetime.fromisoformat(date_str).date()
-    except Exception:
+    except ValueError:
         return None
 
 def convert_decimals(obj):
     """
     Recursively convert Decimal objects to float within dictionaries or lists.
+
+    Code Review Note:
+    -----------------
+    This helper method ensures that all decimal.Decimal instances in our card data are
+    converted to float, preventing JSON serialization errors when wrapping data with
+    psycopg2.extras.Json. Since Scryfall's API may include Decimal values (e.g., in price
+    fields or mana cost calculations), this recursive conversion handles cases where
+    Decimal objects might be deeply nested within dictionaries or lists.
     """
     if isinstance(obj, decimal.Decimal):
         return float(obj)
@@ -132,13 +149,13 @@ def convert_decimals(obj):
 def process_card(card):
     """
     Process a card JSON object for database insertion.
+    
     - Converts released_at to a date.
     - If the card has multiple faces (card_faces) and no top-level image_uris,
       aggregates image URLs from each face into a list and sets it to image_uris.
     - Wraps dictionaries/lists in psycopg2.extras.Json for JSONB columns.
     - Converts Decimal objects to float.
     """
-    # If multifaced and no top-level image_uris, aggregate them from each face.
     if "card_faces" in card and not card.get("image_uris"):
         aggregated = []
         for face in card["card_faces"]:
@@ -155,7 +172,6 @@ def process_card(card):
         elif isinstance(val, decimal.Decimal):
             processed[col] = float(val)
         elif isinstance(val, (dict, list)):
-            # Recursively convert any Decimal values within the structure.
             processed[col] = psycopg2.extras.Json(convert_decimals(val))
         else:
             processed[col] = val
@@ -165,57 +181,51 @@ def download_latest_json(json_file):
     """
     Checks the Scryfall bulk-data API for the desired JSON file (Oracle Cards or Unique Artwork).
     If the local file is missing or its modification time is older than the server's updated_at,
-    downloads the file from the provided download_uri.
-    After a download, the file's modification time is set to the server's updated_at.
+    downloads the file from the provided download_uri. The file's modification time is then updated.
     """
     bulk_api = "https://api.scryfall.com/bulk-data"
     print(f"Querying Scryfall bulk-data API for the latest {BULK_DATA_TYPE} JSON URL...")
-    resp = requests.get(bulk_api)
+    resp = requests.get(bulk_api, timeout=10)
     if resp.status_code != 200:
-        raise Exception(f"Failed to query bulk-data API: {resp.status_code}")
+        raise RuntimeError(f"Failed to query bulk-data API: {resp.status_code}")
     bulk_data = resp.json().get("data", [])
     desired_bulk = next((item for item in bulk_data if item.get("type") == BULK_DATA_TYPE), None)
     if not desired_bulk:
-        raise Exception(f"{BULK_DATA_TYPE} bulk data not found")
+        raise RuntimeError(f"{BULK_DATA_TYPE} bulk data not found")
     
-    # Parse the server updated_at timestamp.
-    server_updated_at = datetime.fromisoformat(desired_bulk.get("updated_at").replace("Z", "+00:00"))
+    server_updated_at = datetime.fromisoformat(
+        desired_bulk.get("updated_at").replace("Z", "+00:00")
+    )
     download_uri = desired_bulk.get("download_uri")
     print(f"Server reports updated_at: {server_updated_at.isoformat()}")
     print(f"Download URI: {download_uri}")
 
-    # Check if local file exists and is up-to-date.
     if os.path.exists(json_file):
         local_mtime = datetime.fromtimestamp(os.path.getmtime(json_file), tz=timezone.utc)
         print(f"Local file modification time: {local_mtime.isoformat()}")
         if local_mtime >= server_updated_at:
             print(f"{json_file} is up-to-date; skipping download.")
             return
-        else:
-            print(f"{json_file} is outdated; downloading new version...")
+        print(f"{json_file} is outdated; downloading new version...")
 
-    # Download the JSON file.
-    r = requests.get(download_uri)
+    r = requests.get(download_uri, timeout=10)
     if r.status_code != 200:
-        raise Exception(f"Failed to download {BULK_DATA_TYPE} JSON: {r.status_code}")
+        raise RuntimeError(f"Failed to download {BULK_DATA_TYPE} JSON: {r.status_code}")
     
     with open(json_file, "wb") as f:
         f.write(r.content)
-    # Set the local file's modification time to server_updated_at.
     mod_time = server_updated_at.timestamp()
     os.utime(json_file, (mod_time, mod_time))
     print(f"Downloaded and saved as {json_file} with mtime set to {server_updated_at.isoformat()}")
 
 def main():
-    # Use the bulk data type in the filename to differentiate downloads.
-    json_file = f"scryfall-{BULK_DATA_TYPE}.json"  # Local path to the JSON file
+    """Main function to download, process, and import card data into the database."""
+    json_file = f"scryfall-{BULK_DATA_TYPE}.json"
     download_latest_json(json_file)
 
     data = []
     print("Streaming and processing JSON file...")
-    # Stream parse the JSON file for speed and low memory overhead.
     with open(json_file, 'rb') as f:
-        # Assumes the file is a JSON array of card objects.
         cards = ijson.items(f, 'item')
         count = 0
         for card in cards:
@@ -228,10 +238,8 @@ def main():
     print(f"Total cards processed: {count}")
 
     print("Inserting data into database...")
-    # Build SET clause for update: update every column except the primary key ("id").
     update_columns = [col for col in columns if col != "id"]
     set_clause = ", ".join(f"{col} = EXCLUDED.{col}" for col in update_columns)
-    # Qualify target columns with the table name ("cards") in the WHERE clause.
     where_clause = (
         " WHERE (" +
         ", ".join("cards." + col for col in update_columns) +
@@ -240,7 +248,6 @@ def main():
         ")"
     )
     
-    # Updated conflict resolution: Use "id" (the unique Scryfall card id) as the primary key.
     sql = f"""
     INSERT INTO cards ({', '.join(columns)}) VALUES %s
     ON CONFLICT (id) DO UPDATE SET {set_clause}{where_clause}
