@@ -1,232 +1,109 @@
-#!/usr/bin/env python3
-import os
-import time
 import requests
-import psycopg2
-import psycopg2.extras
+import json
+import os
+import datetime
 import ijson
-from datetime import datetime, timezone
-from dotenv import load_dotenv
+import gzip
+# import your database libraries (e.g., psycopg2) and connection logic here
 
-# Load DB configuration from .env
-load_dotenv(dotenv_path=os.path.join(os.getcwd(), "mtg-database", ".env"))
-DB_USER = os.getenv("POSTGRES_USER")
-DB_PASSWORD = os.getenv("POSTGRES_PASSWORD")
-DB_NAME = os.getenv("POSTGRES_DB")
-DB_HOST = os.getenv("POSTGRES_HOST", "localhost")
-DB_PORT = os.getenv("POSTGRES_PORT", "5432")
+# ---------------------------
+# CONFIGURATION
+# ---------------------------
+# Set the bulk data type here. Change to "unique_artwork" to use unique artwork data.
+BULK_DATA_TYPE = "oracle_cards"  # or "unique_artwork"
 
-# Connect to PostgreSQL
-conn = psycopg2.connect(
-    dbname=DB_NAME,
-    user=DB_USER,
-    password=DB_PASSWORD,
-    host=DB_HOST,
-    port=DB_PORT
-)
-cursor = conn.cursor()
+# Scryfall bulk data API endpoint
+BULK_DATA_URL = "https://api.scryfall.com/bulk-data"
 
-# List of columns exactly matching the init.sql table definition.
-# oracle_id is the primary key and is not updated.
-# "card_faces" is included to store multiface card details.
-columns = [
-    "oracle_id",  # primary key
-    "id",
-    "object",
-    "multiverse_ids",
-    "mtgo_id",
-    "tcgplayer_id",
-    "cardmarket_id",
-    "name",
-    "lang",
-    "released_at",
-    "uri",
-    "scryfall_uri",
-    "layout",
-    "highres_image",
-    "image_status",
-    "image_uris",
-    "mana_cost",
-    "cmc",
-    "type_line",
-    "oracle_text",
-    "power",
-    "toughness",
-    "colors",
-    "color_identity",
-    "keywords",
-    "all_parts",
-    "legalities",
-    "games",
-    "reserved",
-    "game_changer",
-    "foil",
-    "nonfoil",
-    "finishes",
-    "oversized",
-    "promo",
-    "reprint",
-    "variation",
-    "set_id",
-    "set",
-    "set_name",
-    "set_type",
-    "set_uri",
-    "set_search_uri",
-    "scryfall_set_uri",
-    "rulings_uri",
-    "prints_search_uri",
-    "collector_number",
-    "digital",
-    "rarity",
-    "watermark",
-    "flavor_text",
-    "card_back_id",
-    "artist",
-    "artist_ids",
-    "illustration_id",
-    "border_color",
-    "frame",
-    "frame_effects",
-    "security_stamp",
-    "full_art",
-    "textless",
-    "booster",
-    "story_spotlight",
-    "edhrec_rank",
-    "preview",
-    "prices",
-    "related_uris",
-    "purchase_uris",
-    "card_faces"
-]
+# ---------------------------
+# FETCHING BULK DATA LIST
+# ---------------------------
+def fetch_bulk_data_list():
+    response = requests.get(BULK_DATA_URL)
+    if response.status_code == 200:
+        return response.json()['data']
+    else:
+        raise Exception(f"Failed to fetch bulk data list: HTTP {response.status_code}")
 
-def parse_date(date_str):
-    """Convert an ISO date string to a date object; return None if invalid."""
-    if not date_str:
-        return None
-    try:
-        return datetime.fromisoformat(date_str).date()
-    except Exception:
-        return None
+# ---------------------------
+# SELECT THE DESIRED BULK DATA ENTRY
+# ---------------------------
+def get_bulk_data_entry(bulk_data_list, data_type):
+    for entry in bulk_data_list:
+        if entry['type'] == data_type:
+            return entry
+    raise Exception(f"Bulk data of type '{data_type}' not found")
 
-def process_card(card):
-    """
-    Process a card JSON object for database insertion.
-    - Converts released_at to a date.
-    - If the card has multiple faces (card_faces) and no top-level image_uris,
-      aggregates image URLs from each face into a list and sets it to image_uris.
-    - Wraps dictionaries/lists in psycopg2.extras.Json for JSONB columns.
-    """
-    # If multifaced and no top-level image_uris, aggregate them from each face.
-    if "card_faces" in card and not card.get("image_uris"):
-        aggregated = []
-        for face in card["card_faces"]:
-            if "image_uris" in face:
-                aggregated.append(face["image_uris"])
-        if aggregated:
-            card["image_uris"] = aggregated
-
-    processed = {}
-    for col in columns:
-        val = card.get(col)
-        if col == "released_at":
-            processed[col] = parse_date(val)
-        elif isinstance(val, (dict, list)):
-            processed[col] = psycopg2.extras.Json(val)
-        else:
-            processed[col] = val
-    return processed
-
-def download_latest_json(json_file):
-    """
-    Checks the Scryfall bulk-data API for the Oracle Cards file.
-    If the local file is missing or its modification time is older than the server's updated_at,
-    downloads the file from the provided download_uri.
-    After a download, the file's modification time is set to the server's updated_at.
-    """
-    bulk_api = "https://api.scryfall.com/bulk-data"
-    print("Querying Scryfall bulk-data API for the latest Oracle Cards JSON URL...")
-    resp = requests.get(bulk_api)
-    if resp.status_code != 200:
-        raise Exception(f"Failed to query bulk-data API: {resp.status_code}")
-    bulk_data = resp.json().get("data", [])
-    oracle_bulk = next((item for item in bulk_data if item.get("type") == "oracle_cards"), None)
-    if not oracle_bulk:
-        raise Exception("Oracle Cards bulk data not found")
+# ---------------------------
+# DOWNLOAD THE BULK DATA FILE
+# ---------------------------
+def download_bulk_data(entry, local_filename):
+    download_uri = entry['download_uri']
+    response = requests.get(download_uri, stream=True)
+    if response.status_code == 200:
+        with open(local_filename, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=1024 * 1024):
+                if chunk:
+                    f.write(chunk)
+    else:
+        raise Exception(f"Failed to download bulk data: HTTP {response.status_code}")
     
-    # Parse the server updated_at timestamp.
-    server_updated_at = datetime.fromisoformat(oracle_bulk.get("updated_at").replace("Z", "+00:00"))
-    download_uri = oracle_bulk.get("download_uri")
-    print(f"Server reports updated_at: {server_updated_at.isoformat()}")
-    print(f"Download URI: {download_uri}")
+    # Update file modification time to match the updated_at timestamp from Scryfall
+    updated_at = datetime.datetime.strptime(entry['updated_at'], "%Y-%m-%dT%H:%M:%S.%f%z")
+    mod_time = updated_at.timestamp()
+    os.utime(local_filename, (mod_time, mod_time))
 
-    # Check if local file exists and is up-to-date.
-    if os.path.exists(json_file):
-        local_mtime = datetime.fromtimestamp(os.path.getmtime(json_file), tz=timezone.utc)
-        print(f"Local file modification time: {local_mtime.isoformat()}")
-        if local_mtime >= server_updated_at:
-            print(f"{json_file} is up-to-date; skipping download.")
-            return
-        else:
-            print(f"{json_file} is outdated; downloading new version...")
+# ---------------------------
+# PROCESS THE BULK DATA FILE AND UPSERT INTO THE DATABASE
+# ---------------------------
+def process_bulk_data(local_filename):
+    # Open and decompress the file
+    with gzip.open(local_filename, 'rb') as f:
+        # Use ijson to stream parse each card object in the file
+        objects = ijson.items(f, 'item')
+        for card in objects:
+            # Here you would map the card data to your database schema
+            # and perform an upsert into PostgreSQL.
+            # Example (pseudo-code):
+            #
+            # upsert_card(card)
+            #
+            # For instance:
+            #   cursor.execute("""
+            #       INSERT INTO cards (oracle_id, name, image_uris, ...)
+            #       VALUES (%s, %s, %s, ...)
+            #       ON CONFLICT (oracle_id) DO UPDATE SET
+            #       name = EXCLUDED.name,
+            #       image_uris = EXCLUDED.image_uris,
+            #       ...
+            #   """, (card['oracle_id'], card.get('name'), json.dumps(card.get('image_uris')), ...))
+            pass
 
-    # Download the JSON file.
-    r = requests.get(download_uri)
-    if r.status_code != 200:
-        raise Exception(f"Failed to download Oracle Cards JSON: {r.status_code}")
-    
-    with open(json_file, "wb") as f:
-        f.write(r.content)
-    # Set the local file's modification time to server_updated_at.
-    mod_time = server_updated_at.timestamp()
-    os.utime(json_file, (mod_time, mod_time))
-    print(f"Downloaded and saved as {json_file} with mtime set to {server_updated_at.isoformat()}")
-
+# ---------------------------
+# MAIN FUNCTION
+# ---------------------------
 def main():
-    json_file = "scryfall-cards.json"  # Local path to the JSON file
-    download_latest_json(json_file)
-
-    data = []
-    print("Streaming and processing JSON file...")
-    # Stream parse the JSON file for speed and low memory overhead.
-    with open(json_file, 'rb') as f:
-        # Assumes the file is a JSON array of card objects.
-        cards = ijson.items(f, 'item')
-        count = 0
-        for card in cards:
-            processed = process_card(card)
-            row = tuple(processed.get(col) for col in columns)
-            data.append(row)
-            count += 1
-            if count % 10000 == 0:
-                print(f"Processed {count} cards...")
-    print(f"Total cards processed: {count}")
-
-    print("Inserting data into database...")
-    # Build SET clause for update: update every column except the primary key.
-    update_columns = [col for col in columns if col != "oracle_id"]
-    set_clause = ", ".join(f"{col} = EXCLUDED.{col}" for col in update_columns)
-    # Qualify target columns with the table name ("cards") in the WHERE clause.
-    where_clause = (
-        " WHERE (" +
-        ", ".join("cards." + col for col in update_columns) +
-        ") IS DISTINCT FROM (" +
-        ", ".join(f"EXCLUDED.{col}" for col in update_columns) +
-        ")"
-    )
+    bulk_data_list = fetch_bulk_data_list()
+    entry = get_bulk_data_entry(bulk_data_list, BULK_DATA_TYPE)
     
-    sql = f"""
-    INSERT INTO cards ({', '.join(columns)}) VALUES %s
-    ON CONFLICT (oracle_id) DO UPDATE SET {set_clause}{where_clause}
-    """
-    psycopg2.extras.execute_values(
-        cursor, sql, data, template=None, page_size=1000
-    )
-    conn.commit()
-    cursor.close()
-    conn.close()
-    print("Data import complete.")
+    local_filename = f"{BULK_DATA_TYPE}.json.gz"
+    download_required = True
+    
+    # Check if a local file exists and whether it is up-to-date
+    if os.path.exists(local_filename):
+        file_mod_time = datetime.datetime.fromtimestamp(os.path.getmtime(local_filename), tz=datetime.timezone.utc)
+        entry_updated_time = datetime.datetime.strptime(entry['updated_at'], "%Y-%m-%dT%H:%M:%S.%f%z")
+        if file_mod_time >= entry_updated_time:
+            download_required = False
+    
+    if download_required:
+        print(f"Downloading {BULK_DATA_TYPE} bulk data...")
+        download_bulk_data(entry, local_filename)
+    else:
+        print("Local bulk data is up-to-date.")
+    
+    # Process the downloaded data file (perform upsert into your PostgreSQL database)
+    process_bulk_data(local_filename)
 
 if __name__ == "__main__":
     main()
