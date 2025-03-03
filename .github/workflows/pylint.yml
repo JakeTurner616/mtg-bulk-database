@@ -1,4 +1,4 @@
-name: Pylint CI
+name: Code Quality CI
 
 on:
   push:
@@ -22,13 +22,19 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pylint anybadge
+          pip install pylint anybadge lizard
 
       - name: Run pylint and capture score
         id: pylint
         run: |
           score=$(pylint $(git ls-files '*.py') --score=y --exit-zero | grep "Your code has been rated at" | awk '{print $7}' | cut -d'/' -f1)
           echo "pylint_score=$score" >> $GITHUB_OUTPUT
+
+      - name: Run lizard and capture average complexity
+        id: lizard
+        run: |
+          complexity=$(lizard . | grep "Average" | awk '{print $4}')
+          echo "complexity=$complexity" >> $GITHUB_OUTPUT
 
       - name: Create docs folder
         run: mkdir -p docs
@@ -37,11 +43,15 @@ jobs:
         run: |
           anybadge --overwrite --label=pylint --value=${{ steps.pylint.outputs.pylint_score }} --file=docs/pylint.svg 2=red 4=orange 8=yellow 10=green
 
-      - name: Commit updated badge to docs directory
+      - name: Generate complexity badge using anybadge
+        run: |
+          anybadge --overwrite --label=complexity --value=${{ steps.lizard.outputs.complexity }} --file=docs/complexity.svg 5=green 10=yellow 15=orange 20=red
+
+      - name: Commit updated badges to docs directory
         uses: EndBug/add-and-commit@v9
         with:
-          message: "update pylint test"
-          add: "docs/pylint.svg"
+          message: "update pylint and complexity badges"
+          add: "docs/pylint.svg docs/complexity.svg"
           author_name: "github-actions"
           author_email: "github-actions@github.com"
           github_token: ${{ secrets.GITHUB_TOKEN }}
