@@ -33,10 +33,11 @@ jobs:
           score=$(pylint $(git ls-files '*.py') --score=y --exit-zero | grep "Your code has been rated at" | awk '{print $7}' | cut -d'/' -f1)
           echo "pylint_score=$score" >> $GITHUB_OUTPUT
 
+      - name: Create docs folder
+        run: mkdir -p docs
+
       - name: Generate pylint badge using anybadge
         run: |
-          # Generate a badge using anybadge and save it to the /docs folder.
-          # Thresholds: score < 2 -> red, < 4 -> orange, < 8 -> yellow, < 10 -> green.
           anybadge --label=pylint --value=${{ steps.pylint.outputs.pylint_score }} --file=docs/pylint.svg 2=red 4=orange 8=yellow 10=green
 
       - name: Commit updated badge to docs directory
