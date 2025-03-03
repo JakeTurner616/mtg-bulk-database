@@ -27,9 +27,6 @@ jobs:
       - name: Run pylint and capture score
         id: pylint
         run: |
-          # Run pylint and capture the overall score from the output.
-          # The output line typically looks like:
-          # "Your code has been rated at 9.63/10"
           score=$(pylint $(git ls-files '*.py') --score=y --exit-zero | grep "Your code has been rated at" | awk '{print $7}' | cut -d'/' -f1)
           echo "pylint_score=$score" >> $GITHUB_OUTPUT
 
@@ -45,4 +42,6 @@ jobs:
         with:
           message: "chore: update pylint badge"
           add: "docs/pylint.svg"
-          commit_author: "github-actions <github-actions@github.com>"
+          author_name: "github-actions"
+          author_email: "github-actions@github.com"
+          github_token: ${{ secrets.GITHUB_TOKEN }}
