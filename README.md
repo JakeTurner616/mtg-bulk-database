@@ -1,6 +1,6 @@
-# mtg-bulk-database
+# [mtg-bulk-database](https://github.com/JakeTurner616/mtg-bulk-database/) &middot; [![GitHub license](https://img.shields.io/badge/license-GNU%20GPL%203.0-blue.svg)](LICENSE) ![Pylint](docs/pylint.svg)
 
-Simple MTG (Magic: The Gathering) database implementation using Scryfall’s bulk data JSON to PostgreSQL.
+Simple MTG (Magic: The Gathering) Postgres database implementation using Scryfall’s bulk data JSON.
 
 ## Overview
 
