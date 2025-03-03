@@ -30,10 +30,10 @@ jobs:
           score=$(pylint $(git ls-files '*.py') --score=y --exit-zero | grep "Your code has been rated at" | awk '{print $7}' | cut -d'/' -f1)
           echo "pylint_score=$score" >> $GITHUB_OUTPUT
 
-      - name: Run lizard and capture average complexity
+      - name: Run lizard on specific file and capture average complexity
         id: lizard
         run: |
-          complexity=$(lizard . | grep -E "^[[:space:]]*[0-9]+" | tail -n 1 | awk '{print $3}')
+          complexity=$(lizard import_cards.py | grep -E "^[[:space:]]*[0-9]+" | tail -n 1 | awk '{print $3}')
           echo "complexity=$complexity" >> $GITHUB_OUTPUT
 
       - name: Create docs folder
