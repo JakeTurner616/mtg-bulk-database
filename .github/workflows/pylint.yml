@@ -35,7 +35,7 @@ jobs:
 
       - name: Generate pylint badge using anybadge
         run: |
-          anybadge --label=pylint --value=${{ steps.pylint.outputs.pylint_score }} --file=docs/pylint.svg 2=red 4=orange 8=yellow 10=green
+          anybadge --overwrite --label=pylint --value=${{ steps.pylint.outputs.pylint_score }} --file=docs/pylint.svg 2=red 4=orange 8=yellow 10=green
 
       - name: Commit updated badge to docs directory
         uses: EndBug/add-and-commit@v9
