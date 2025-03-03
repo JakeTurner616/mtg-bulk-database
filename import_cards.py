@@ -5,6 +5,7 @@ import requests
 import psycopg2
 import psycopg2.extras
 import ijson
+import decimal
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 
@@ -12,7 +13,7 @@ from dotenv import load_dotenv
 # CONFIGURATION
 # ---------------------------
 # Set the bulk data type here: "oracle_cards" or "unique_artwork"
-BULK_DATA_TYPE = "oracle_cards"  # or "unique_artwork"
+BULK_DATA_TYPE = "oracle_cards"  # or "oracle_cards"
 
 # Load DB configuration from .env
 load_dotenv(dotenv_path=os.path.join(os.getcwd(), "mtg-database", ".env"))
@@ -32,12 +33,12 @@ conn = psycopg2.connect(
 )
 cursor = conn.cursor()
 
-# List of columns exactly matching the init.sql table definition.
-# oracle_id is the primary key and is not updated.
-# "card_faces" is included to store multiface card details.
+# List of columns exactly matching the updated init.sql table definition.
+# IMPORTANT STRUCTURAL CHANGE:
+# The unique Scryfall card "id" is now used as the primary key instead of oracle_id.
 columns = [
-    "oracle_id",  # primary key
-    "id",
+    "oracle_id",  # stored as a regular field
+    "id",         # unique Scryfall card id (PRIMARY KEY)
     "object",
     "multiverse_ids",
     "mtgo_id",
@@ -61,7 +62,6 @@ columns = [
     "colors",
     "color_identity",
     "keywords",
-    "all_parts",
     "legalities",
     "games",
     "reserved",
@@ -116,6 +116,19 @@ def parse_date(date_str):
     except Exception:
         return None
 
+def convert_decimals(obj):
+    """
+    Recursively convert Decimal objects to float within dictionaries or lists.
+    """
+    if isinstance(obj, decimal.Decimal):
+        return float(obj)
+    elif isinstance(obj, dict):
+        return {k: convert_decimals(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_decimals(item) for item in obj]
+    else:
+        return obj
+
 def process_card(card):
     """
     Process a card JSON object for database insertion.
@@ -123,6 +136,7 @@ def process_card(card):
     - If the card has multiple faces (card_faces) and no top-level image_uris,
       aggregates image URLs from each face into a list and sets it to image_uris.
     - Wraps dictionaries/lists in psycopg2.extras.Json for JSONB columns.
+    - Converts Decimal objects to float.
     """
     # If multifaced and no top-level image_uris, aggregate them from each face.
     if "card_faces" in card and not card.get("image_uris"):
@@ -138,8 +152,11 @@ def process_card(card):
         val = card.get(col)
         if col == "released_at":
             processed[col] = parse_date(val)
+        elif isinstance(val, decimal.Decimal):
+            processed[col] = float(val)
         elif isinstance(val, (dict, list)):
-            processed[col] = psycopg2.extras.Json(val)
+            # Recursively convert any Decimal values within the structure.
+            processed[col] = psycopg2.extras.Json(convert_decimals(val))
         else:
             processed[col] = val
     return processed
@@ -211,8 +228,8 @@ def main():
     print(f"Total cards processed: {count}")
 
     print("Inserting data into database...")
-    # Build SET clause for update: update every column except the primary key.
-    update_columns = [col for col in columns if col != "oracle_id"]
+    # Build SET clause for update: update every column except the primary key ("id").
+    update_columns = [col for col in columns if col != "id"]
     set_clause = ", ".join(f"{col} = EXCLUDED.{col}" for col in update_columns)
     # Qualify target columns with the table name ("cards") in the WHERE clause.
     where_clause = (
@@ -223,9 +240,10 @@ def main():
         ")"
     )
     
+    # Updated conflict resolution: Use "id" (the unique Scryfall card id) as the primary key.
     sql = f"""
     INSERT INTO cards ({', '.join(columns)}) VALUES %s
-    ON CONFLICT (oracle_id) DO UPDATE SET {set_clause}{where_clause}
+    ON CONFLICT (id) DO UPDATE SET {set_clause}{where_clause}
     """
     psycopg2.extras.execute_values(
         cursor, sql, data, template=None, page_size=1000

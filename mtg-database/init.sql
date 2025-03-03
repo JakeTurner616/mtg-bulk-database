@@ -1,8 +1,8 @@
 DROP TABLE IF EXISTS cards;
 
 CREATE TABLE cards (
-    oracle_id UUID PRIMARY KEY,
-    id UUID,
+    id UUID PRIMARY KEY,  -- Using the unique Scryfall card id as the primary key
+    oracle_id UUID,
     object TEXT,
     multiverse_ids JSONB,
     mtgo_id INTEGER,
@@ -26,7 +26,6 @@ CREATE TABLE cards (
     colors JSONB,
     color_identity JSONB,
     keywords JSONB,
-    all_parts JSONB,
     legalities JSONB,
     games JSONB,
     reserved BOOLEAN,
