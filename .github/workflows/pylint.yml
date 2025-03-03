@@ -45,7 +45,7 @@ jobs:
 
       - name: Generate complexity badge using anybadge
         run: |
-          anybadge --overwrite --label=Lizard complexity --value=${{ steps.lizard.outputs.complexity }} --file=docs/complexity.svg 8=green 16=yellow 20=orange 25=red
+          anybadge --overwrite --label='Lizard complexity' --value=${{ steps.lizard.outputs.complexity }} --file=docs/complexity.svg 8=green 16=yellow 20=orange 25=red
 
       - name: Commit updated badges to docs directory
         uses: EndBug/add-and-commit@v9
