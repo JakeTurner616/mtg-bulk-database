@@ -169,12 +169,13 @@ def process_card(card):
         val = card.get(col)
         if col == "released_at":
             processed[col] = parse_date(val)
-        elif isinstance(val, decimal.Decimal):
-            processed[col] = float(val)
-        elif isinstance(val, (dict, list)):
-            processed[col] = psycopg2.extras.Json(convert_decimals(val))
         else:
-            processed[col] = val
+            if isinstance(val, decimal.Decimal):
+                processed[col] = float(val)
+            elif isinstance(val, (dict, list)):
+                processed[col] = psycopg2.extras.Json(convert_decimals(val))
+            else:
+                processed[col] = val
     return processed
 
 def download_latest_json(json_file):
