@@ -125,7 +125,7 @@ Magic cards can have multiple faces. Scryfall represents these as a single card 
 
    - For Windows:
 
-     ```bash
+     ```powershell
      python -m venv venv
      venv\Scripts\activate
      ```
@@ -175,7 +175,7 @@ Run the importer script:
 python import_cards.py
 ```
 
-The script will:
+The `import_cards.py` script will:
 
 - Query the Scryfall Bulk Data API for the latest JSON file (Oracle Cards or Unique Artwork).
 - Check if the local copy (e.g., `scryfall-unique_artwork.json`) is up-to-date.
@@ -184,7 +184,7 @@ The script will:
 - For multifaced cards, aggregate image URLs from `card_faces` if required.
 - Perform a bulk UPSERT into the PostgreSQL database using `ON CONFLICT (id)` so that if a card with the same unique **id** already exists, only changed fields are updated.
 
-This allows you to efficiently update your `cards` table with thousands of records per second.
+This allows you to efficiently update your `cards` table.
 
 ## Author
 
