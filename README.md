@@ -1,6 +1,6 @@
 # mtg-bulk-database
 
-Simple MTG (Magic: The Gathering) database implementation using Scryfall’s Oracle Cards bulk data JSON to PostgreSQL.
+Simple MTG (Magic: The Gathering) database implementation using Scryfall’s bulk data JSON to PostgreSQL.
 
 ## Overview
 
@@ -14,18 +14,20 @@ The `mtg-bulk-database` script is a data science utility that:
 - Supports multifaced cards by:
   - Storing detailed multiface information in a dedicated `card_faces` JSONB column.
   - Aggregating image URLs from individual faces if the top-level image URLs are absent.
-- Requires that the database table has a unique constraint (primary key) on the `oracle_id` column.
+- **Important Structural Change:**  
+  The database schema now uses the unique Scryfall card **id** as the primary key (instead of **oracle_id**).  
+  This ensures that every card object (including reprints and variants) is uniquely identified.
 
 ## SQL Schema
 
-Below is the 1:1 Scryfall bulk data JSON to an SQL schema that the utility will use.  
+Below is the updated 1:1 Scryfall bulk data JSON to an SQL schema that the utility will use.  
 [Scryfall Types & Methods docs](https://scryfall.com/docs/api/bulk-data)
 
 ```sql
 DROP TABLE IF EXISTS cards;
 CREATE TABLE cards (
-    oracle_id UUID PRIMARY KEY,
-    id UUID,
+    id UUID PRIMARY KEY,            -- Use the unique Scryfall card `id` as the primary key
+    oracle_id UUID,
     object TEXT,
     multiverse_ids JSONB,
     mtgo_id INTEGER,
@@ -96,14 +98,12 @@ CREATE TABLE cards (
 );
 ```
 
-*Note: The new `card_faces` column stores the multiface card details (e.g., for split, transform, or modal DFC cards).*
+## Multifaced Cards
 
-### Multifaced Cards
+Magic cards can have multiple faces. Scryfall represents these as a single card object with a `card_faces` array. This script:
 
-Scryfall Multifaced cards with a `card_faces` array containing one object per face. This script must:
-
-- Add a new `card_faces` column (of type JSONB) to store the multiface data.
-- In cases where a multifaced card lacks a top-level `image_uris`, aggregates image URLs from each face into `image_uris`.
+- Adds the new `card_faces` column (type JSONB) to store multiface details.
+- In cases where a multifaced card lacks a top-level `image_uris`, aggregates image URLs from each face into the top-level `image_uris` field.
 
 ## Installation
 
@@ -140,19 +140,19 @@ Scryfall Multifaced cards with a `card_faces` array containing one object per fa
 
 4. **Set Up Your PostgreSQL Database Schema:**
 
-   Run the provided SQL schema to create the database table. For example, using `psql`:
+   Run the updated SQL schema to create the database table. For example, using `psql`:
 
    ```bash
    psql -U myuser -d mtgdb -f init.sql
    ```
 
-   *Ensure the table has a primary key (unique constraint) on `oracle_id`.*
+   *Make sure the table has a primary key on the **id** column.*
 
 5. **(Optional) Run a PostgreSQL Instance using Docker:**
 
-   ```bash
-   docker build -t mtg-postgres .
-   docker run -d --name mtg-postgres --env-file .env -p 5432:5432 -v ${PWD}/postgres:/var/lib/postgresql/data mtg-postgres
+   ```powershell
+   docker build -t mtg-postgres .\mtg-database\
+   docker run -d --name mtg-postgres --env-file ./mtg-database/.env -p 5432:5432 -v ${PWD}/mtg-database/postgres:/var/lib/postgresql/data mtg-postgres
    ```
 
 ## Environment Variables
@@ -177,15 +177,14 @@ python import_cards.py
 
 The script will:
 
-- Query the Scryfall Bulk Data API for the latest Oracle Cards JSON file.
-- Check if the local copy (`scryfall-cards.json`) is up-to-date.
-- Download a new copy if the file is outdated.
+- Query the Scryfall Bulk Data API for the latest JSON file (Oracle Cards or Unique Artwork).
+- Check if the local copy (e.g., `scryfall-unique_artwork.json`) is up-to-date.
+- Download a new copy if necessary.
 - Stream through the JSON file and process each card.
-- For multifaced cards, aggregate image URLs from `card_faces` if necessary.
-- Perform a bulk UPSERT into the PostgreSQL database, updating only fields that have changed.
+- For multifaced cards, aggregate image URLs from `card_faces` if required.
+- Perform a bulk UPSERT into the PostgreSQL database using `ON CONFLICT (id)` so that if a card with the same unique **id** already exists, only changed fields are updated.
 
-This lets you efficiently query thousands of records per second on the `cards` table for data experimentation.
-
+This allows you to efficiently update your `cards` table with thousands of records per second.
 
 ## Author
 

@@ -5,8 +5,15 @@ import requests
 import psycopg2
 import psycopg2.extras
 import ijson
+import decimal
 from datetime import datetime, timezone
 from dotenv import load_dotenv
+
+# ---------------------------
+# CONFIGURATION
+# ---------------------------
+# Set the bulk data type here: "oracle_cards" or "unique_artwork"
+BULK_DATA_TYPE = "oracle_cards"  # or "oracle_cards"
 
 # Load DB configuration from .env
 load_dotenv(dotenv_path=os.path.join(os.getcwd(), "mtg-database", ".env"))
@@ -26,12 +33,12 @@ conn = psycopg2.connect(
 )
 cursor = conn.cursor()
 
-# List of columns exactly matching the init.sql table definition.
-# oracle_id is the primary key and is not updated.
-# "card_faces" is included to store multiface card details.
+# List of columns exactly matching the updated init.sql table definition.
+# IMPORTANT STRUCTURAL CHANGE:
+# The unique Scryfall card "id" is now used as the primary key instead of oracle_id.
 columns = [
-    "oracle_id",  # primary key
-    "id",
+    "oracle_id",  # stored as a regular field
+    "id",         # unique Scryfall card id (PRIMARY KEY)
     "object",
     "multiverse_ids",
     "mtgo_id",
@@ -55,7 +62,6 @@ columns = [
     "colors",
     "color_identity",
     "keywords",
-    "all_parts",
     "legalities",
     "games",
     "reserved",
@@ -110,6 +116,19 @@ def parse_date(date_str):
     except Exception:
         return None
 
+def convert_decimals(obj):
+    """
+    Recursively convert Decimal objects to float within dictionaries or lists.
+    """
+    if isinstance(obj, decimal.Decimal):
+        return float(obj)
+    elif isinstance(obj, dict):
+        return {k: convert_decimals(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_decimals(item) for item in obj]
+    else:
+        return obj
+
 def process_card(card):
     """
     Process a card JSON object for database insertion.
@@ -117,6 +136,7 @@ def process_card(card):
     - If the card has multiple faces (card_faces) and no top-level image_uris,
       aggregates image URLs from each face into a list and sets it to image_uris.
     - Wraps dictionaries/lists in psycopg2.extras.Json for JSONB columns.
+    - Converts Decimal objects to float.
     """
     # If multifaced and no top-level image_uris, aggregate them from each face.
     if "card_faces" in card and not card.get("image_uris"):
@@ -132,32 +152,35 @@ def process_card(card):
         val = card.get(col)
         if col == "released_at":
             processed[col] = parse_date(val)
+        elif isinstance(val, decimal.Decimal):
+            processed[col] = float(val)
         elif isinstance(val, (dict, list)):
-            processed[col] = psycopg2.extras.Json(val)
+            # Recursively convert any Decimal values within the structure.
+            processed[col] = psycopg2.extras.Json(convert_decimals(val))
         else:
             processed[col] = val
     return processed
 
 def download_latest_json(json_file):
     """
-    Checks the Scryfall bulk-data API for the Oracle Cards file.
+    Checks the Scryfall bulk-data API for the desired JSON file (Oracle Cards or Unique Artwork).
     If the local file is missing or its modification time is older than the server's updated_at,
     downloads the file from the provided download_uri.
     After a download, the file's modification time is set to the server's updated_at.
     """
     bulk_api = "https://api.scryfall.com/bulk-data"
-    print("Querying Scryfall bulk-data API for the latest Oracle Cards JSON URL...")
+    print(f"Querying Scryfall bulk-data API for the latest {BULK_DATA_TYPE} JSON URL...")
     resp = requests.get(bulk_api)
     if resp.status_code != 200:
         raise Exception(f"Failed to query bulk-data API: {resp.status_code}")
     bulk_data = resp.json().get("data", [])
-    oracle_bulk = next((item for item in bulk_data if item.get("type") == "oracle_cards"), None)
-    if not oracle_bulk:
-        raise Exception("Oracle Cards bulk data not found")
+    desired_bulk = next((item for item in bulk_data if item.get("type") == BULK_DATA_TYPE), None)
+    if not desired_bulk:
+        raise Exception(f"{BULK_DATA_TYPE} bulk data not found")
     
     # Parse the server updated_at timestamp.
-    server_updated_at = datetime.fromisoformat(oracle_bulk.get("updated_at").replace("Z", "+00:00"))
-    download_uri = oracle_bulk.get("download_uri")
+    server_updated_at = datetime.fromisoformat(desired_bulk.get("updated_at").replace("Z", "+00:00"))
+    download_uri = desired_bulk.get("download_uri")
     print(f"Server reports updated_at: {server_updated_at.isoformat()}")
     print(f"Download URI: {download_uri}")
 
@@ -174,7 +197,7 @@ def download_latest_json(json_file):
     # Download the JSON file.
     r = requests.get(download_uri)
     if r.status_code != 200:
-        raise Exception(f"Failed to download Oracle Cards JSON: {r.status_code}")
+        raise Exception(f"Failed to download {BULK_DATA_TYPE} JSON: {r.status_code}")
     
     with open(json_file, "wb") as f:
         f.write(r.content)
@@ -184,7 +207,8 @@ def download_latest_json(json_file):
     print(f"Downloaded and saved as {json_file} with mtime set to {server_updated_at.isoformat()}")
 
 def main():
-    json_file = "scryfall-cards.json"  # Local path to the JSON file
+    # Use the bulk data type in the filename to differentiate downloads.
+    json_file = f"scryfall-{BULK_DATA_TYPE}.json"  # Local path to the JSON file
     download_latest_json(json_file)
 
     data = []
@@ -204,8 +228,8 @@ def main():
     print(f"Total cards processed: {count}")
 
     print("Inserting data into database...")
-    # Build SET clause for update: update every column except the primary key.
-    update_columns = [col for col in columns if col != "oracle_id"]
+    # Build SET clause for update: update every column except the primary key ("id").
+    update_columns = [col for col in columns if col != "id"]
     set_clause = ", ".join(f"{col} = EXCLUDED.{col}" for col in update_columns)
     # Qualify target columns with the table name ("cards") in the WHERE clause.
     where_clause = (
@@ -216,9 +240,10 @@ def main():
         ")"
     )
     
+    # Updated conflict resolution: Use "id" (the unique Scryfall card id) as the primary key.
     sql = f"""
     INSERT INTO cards ({', '.join(columns)}) VALUES %s
-    ON CONFLICT (oracle_id) DO UPDATE SET {set_clause}{where_clause}
+    ON CONFLICT (id) DO UPDATE SET {set_clause}{where_clause}
     """
     psycopg2.extras.execute_values(
         cursor, sql, data, template=None, page_size=1000
