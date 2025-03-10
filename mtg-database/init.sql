@@ -1,5 +1,36 @@
+-- Drop the table and ENUM type if they already exist
 DROP TABLE IF EXISTS cards;
+DROP TYPE IF EXISTS layout_type;
 
+-- Create an ENUM type for the allowed layout values
+CREATE TYPE layout_type AS ENUM (
+    'normal',
+    'split',
+    'flip',
+    'transform',
+    'modal_dfc',
+    'meld',
+    'leveler',
+    'class',
+    'case',
+    'saga',
+    'adventure',
+    'mutate',
+    'prototype',
+    'battle',
+    'planar',
+    'scheme',
+    'vanguard',
+    'token',
+    'double_faced_token',
+    'emblem',
+    'augment',
+    'host',
+    'art_series',
+    'reversible_card'
+);
+
+-- Create the cards table using the ENUM type for layout
 CREATE TABLE cards (
     id UUID PRIMARY KEY,  -- Using the unique Scryfall card id as the primary key
     oracle_id UUID,
@@ -13,7 +44,7 @@ CREATE TABLE cards (
     released_at DATE,
     uri TEXT,
     scryfall_uri TEXT,
-    layout TEXT,
+    layout layout_type,  -- Now using our ENUM type for layout values
     highres_image BOOLEAN,
     image_status TEXT,
     image_uris JSONB,

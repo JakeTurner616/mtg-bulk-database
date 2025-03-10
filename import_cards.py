@@ -24,6 +24,14 @@ from dotenv import load_dotenv
 # Set the bulk data type here: "oracle_cards" or "unique_artwork"
 BULK_DATA_TYPE = "oracle_cards"  # or "unique_artwork"
 
+# Define allowed layout values so we can validate card data.
+ALLOWED_LAYOUTS = {
+    'normal', 'split', 'flip', 'transform', 'modal_dfc', 'meld', 'leveler',
+    'class', 'case', 'saga', 'adventure', 'mutate', 'prototype', 'battle',
+    'planar', 'scheme', 'vanguard', 'token', 'double_faced_token', 'emblem',
+    'augment', 'host', 'art_series', 'reversible_card'
+}
+
 # Load DB configuration from .env
 load_dotenv(dotenv_path=os.path.join(os.getcwd(), "mtg-database", ".env"))
 DB_USER = os.getenv("POSTGRES_USER")
@@ -129,13 +137,9 @@ def convert_decimals(obj):
     """
     Recursively convert Decimal objects to float within dictionaries or lists.
 
-    Code Review Note:
-    -----------------
     This helper method ensures that all decimal.Decimal instances in our card data are
     converted to float, preventing JSON serialization errors when wrapping data with
-    psycopg2.extras.Json. Since Scryfall's API may include Decimal values (e.g., in price
-    fields or mana cost calculations), this recursive conversion handles cases where
-    Decimal objects might be deeply nested within dictionaries or lists.
+    psycopg2.extras.Json.
     """
     if isinstance(obj, decimal.Decimal):
         return float(obj)
@@ -153,9 +157,17 @@ def process_card(card):
     - Converts released_at to a date.
     - If the card has multiple faces (card_faces) and no top-level image_uris,
       aggregates image URLs from each face into a list and sets it to image_uris.
+    - Validates the layout value against ALLOWED_LAYOUTS.
     - Wraps dictionaries/lists in psycopg2.extras.Json for JSONB columns.
     - Converts Decimal objects to float.
     """
+    # Validate layout value.
+    layout = card.get("layout")
+    if layout not in ALLOWED_LAYOUTS:
+        print(f"Warning: Unexpected layout '{layout}' encountered for card {card.get('name')}.")
+        # Optionally, you could set a default or modify the value here.
+    
+    # Aggregate image_uris if missing at top-level but present in card_faces.
     if "card_faces" in card and not card.get("image_uris"):
         aggregated = []
         for face in card["card_faces"]:

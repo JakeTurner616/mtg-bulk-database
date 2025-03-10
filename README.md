@@ -1,6 +1,6 @@
 # [mtg-bulk-database](https://github.com/JakeTurner616/mtg-bulk-database/) &middot; [![GitHub license](https://img.shields.io/badge/license-GNU%20GPL%203.0-blue.svg)](LICENSE) ![Pylint](docs/pylint.svg) ![Lizard Complexity](docs/complexity.svg)
 
-Simple MTG (Magic: The Gathering) Postgres database implementation using Scryfall’s bulk data JSON.
+Simple MTG (Magic: The Gathering) PostgreSQL database implementation using Scryfall’s bulk data JSON.
 
 ## Overview
 
@@ -14,17 +14,47 @@ The `mtg-bulk-database` script is a data science utility that:
 - Supports multifaced cards by:
   - Storing detailed multiface information in a dedicated `card_faces` JSONB column.
   - Aggregating image URLs from individual faces if the top-level image URLs are absent.
-- **Important Structural Change:**  
-  The database schema now uses the unique Scryfall card **id** as the primary key (instead of **oracle_id**).  
-  This ensures that every card object (including reprints and variants) is uniquely identified.
+- **Layout Binding:**  
+  The `layout` column is now defined using an ENUM type to restrict values to the allowed set. This improves data consistency and makes querying by layout (e.g., `SELECT * FROM cards WHERE layout = 'split';`) straightforward.
 
 ## SQL Schema
 
-Below is the updated 1:1 Scryfall bulk data JSON to an SQL schema that the utility will use.  
+Below is the updated 1:1 Scryfall bulk data JSON-to-SQL schema that the utility will use.  
 [Scryfall Types & Methods docs](https://scryfall.com/docs/api/bulk-data)
 
 ```sql
+-- Drop existing table and ENUM type if they exist
 DROP TABLE IF EXISTS cards;
+DROP TYPE IF EXISTS layout_type;
+
+-- Create an ENUM type for allowed layout values
+CREATE TYPE layout_type AS ENUM (
+    'normal',
+    'split',
+    'flip',
+    'transform',
+    'modal_dfc',
+    'meld',
+    'leveler',
+    'class',
+    'case',
+    'saga',
+    'adventure',
+    'mutate',
+    'prototype',
+    'battle',
+    'planar',
+    'scheme',
+    'vanguard',
+    'token',
+    'double_faced_token',
+    'emblem',
+    'augment',
+    'host',
+    'art_series',
+    'reversible_card'
+);
+
 CREATE TABLE cards (
     id UUID PRIMARY KEY,            -- Use the unique Scryfall card `id` as the primary key
     oracle_id UUID,
@@ -38,7 +68,7 @@ CREATE TABLE cards (
     released_at DATE,
     uri TEXT,
     scryfall_uri TEXT,
-    layout TEXT,
+    layout layout_type,             -- Now using our ENUM type for layout values
     highres_image BOOLEAN,
     image_status TEXT,
     image_uris JSONB,
@@ -150,8 +180,8 @@ Magic cards can have multiple faces. Scryfall represents these as a single card 
 
 5. **(Optional) Run a PostgreSQL Instance using Docker:**
 
-   ```powershell
-   docker build -t mtg-postgres .\mtg-database\
+   ```bash
+   docker build -t mtg-postgres ./mtg-database/
    docker run -d --name mtg-postgres --env-file ./mtg-database/.env -p 5432:5432 -v ${PWD}/mtg-database/postgres:/var/lib/postgresql/data mtg-postgres
    ```
 
@@ -178,13 +208,13 @@ python import_cards.py
 The `import_cards.py` script will:
 
 - Query the Scryfall Bulk Data API for the latest JSON file (Oracle Cards or Unique Artwork).
-- Check if the local copy (e.g., `scryfall-unique_artwork.json`) is up-to-date.
+- Check if the local copy (e.g., `scryfall-oracle_cards.json`) is up-to-date.
 - Download a new copy if necessary.
 - Stream through the JSON file and process each card.
 - For multifaced cards, aggregate image URLs from `card_faces` if required.
 - Perform a bulk UPSERT into the PostgreSQL database using `ON CONFLICT (id)` so that if a card with the same unique **id** already exists, only changed fields are updated.
 
-This allows you to efficiently update your `cards` table.
+This allows you to efficiently update your `cards` table while ensuring that layout values are strictly controlled by the ENUM type.
 
 ## Author
 
