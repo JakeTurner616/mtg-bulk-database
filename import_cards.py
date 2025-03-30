@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-Import Scryfall bulk data into a PostgreSQL database.
+Import Scryfall bulk card data into a PostgreSQL database and import set information from Scryfall.
 
-This script downloads the specified bulk data (oracle_cards or unique_artwork)
-from Scryfall, processes the JSON with low memory overhead using ijson, and
-performs a bulk UPSERT into the PostgreSQL database. The schema uses the unique
-Scryfall card 'id' as the primary key.
+This script downloads the specified bulk card data (oracle_cards, unique_artwork, or all_prints) from Scryfall,
+processes the JSON with low memory overhead using ijson, and performs a bulk UPSERT into the PostgreSQL
+database using the unique Scryfall card 'id' as the primary key.
+
+It also downloads the sets data from Scryfall and upserts that data into a new "sets" table using the set's "id" as the primary key.
 """
 
 import os
@@ -21,8 +22,8 @@ from dotenv import load_dotenv
 # ---------------------------
 # CONFIGURATION
 # ---------------------------
-# Set the bulk data type here: "oracle_cards" or "unique_artwork"
-BULK_DATA_TYPE = "oracle_cards"  # or "unique_artwork"
+# Set the bulk data type here: "oracle_cards", "unique_artwork", or "all_prints"
+BULK_DATA_TYPE = "all_prints"  # Change this to the desired option
 
 # Define allowed layout values so we can validate card data.
 ALLOWED_LAYOUTS = {
@@ -50,9 +51,10 @@ conn = psycopg2.connect(
 )
 cursor = conn.cursor()
 
-# List of columns exactly matching the updated init.sql table definition.
-# IMPORTANT STRUCTURAL CHANGE:
-# The unique Scryfall card "id" is now used as the primary key instead of oracle_id.
+# ---------------------------
+# TABLE SCHEMAS AND COLUMNS
+# ---------------------------
+# List of columns for the cards table exactly matching the updated init.sql table definition.
 columns = [
     "oracle_id",  # stored as a regular field
     "id",         # unique Scryfall card id (PRIMARY KEY)
@@ -124,6 +126,27 @@ columns = [
     "card_faces"
 ]
 
+# Columns for the new sets table.
+set_columns = [
+    "id",            # unique Scryfall set id (PRIMARY KEY)
+    "code",
+    "name",
+    "uri",
+    "scryfall_uri",
+    "search_uri",
+    "released_at",
+    "set_type",
+    "card_count",
+    "parent_set_code",
+    "digital",
+    "nonfoil_only",
+    "foil_only",
+    "icon_svg_uri"
+]
+
+# ---------------------------
+# HELPER FUNCTIONS
+# ---------------------------
 def parse_date(date_str):
     """Convert an ISO date string to a date object; return None if invalid."""
     if not date_str:
@@ -136,10 +159,8 @@ def parse_date(date_str):
 def convert_decimals(obj):
     """
     Recursively convert Decimal objects to float within dictionaries or lists.
-
     This helper method ensures that all decimal.Decimal instances in our card data are
-    converted to float, preventing JSON serialization errors when wrapping data with
-    psycopg2.extras.Json.
+    converted to float.
     """
     if isinstance(obj, decimal.Decimal):
         return float(obj)
@@ -150,13 +171,14 @@ def convert_decimals(obj):
     else:
         return obj
 
+# ---------------------------
+# CARD PROCESSING FUNCTIONS
+# ---------------------------
 def process_card(card):
     """
     Process a card JSON object for database insertion.
-    
     - Converts released_at to a date.
-    - If the card has multiple faces (card_faces) and no top-level image_uris,
-      aggregates image URLs from each face into a list and sets it to image_uris.
+    - Aggregates image_uris from card_faces if missing at top-level.
     - Validates the layout value against ALLOWED_LAYOUTS.
     - Wraps dictionaries/lists in psycopg2.extras.Json for JSONB columns.
     - Converts Decimal objects to float.
@@ -165,9 +187,8 @@ def process_card(card):
     layout = card.get("layout")
     if layout not in ALLOWED_LAYOUTS:
         print(f"Warning: Unexpected layout '{layout}' encountered for card {card.get('name')}.")
-        # Optionally, you could set a default or modify the value here.
     
-    # Aggregate image_uris if missing at top-level but present in card_faces.
+    # Aggregate image_uris if missing but present in card_faces.
     if "card_faces" in card and not card.get("image_uris"):
         aggregated = []
         for face in card["card_faces"]:
@@ -190,19 +211,102 @@ def process_card(card):
                 processed[col] = val
     return processed
 
+def upsert_batch(data_batch):
+    """Execute the UPSERT for a batch of card rows."""
+    update_columns = [col for col in columns if col != "id"]
+    set_clause = ", ".join(f"{col} = EXCLUDED.{col}" for col in update_columns)
+    sql = f"""
+    INSERT INTO cards ({', '.join(columns)}) VALUES %s
+    ON CONFLICT (id) DO UPDATE SET {set_clause}
+    """
+    psycopg2.extras.execute_values(
+        cursor, sql, data_batch, template=None, page_size=1000
+    )
+    conn.commit()
+
+# ---------------------------
+# SETS PROCESSING FUNCTIONS
+# ---------------------------
+def process_set(set_data):
+    """
+    Process a set JSON object for database insertion.
+    Converts released_at to a date and returns a dictionary matching the set_columns.
+    """
+    processed = {}
+    for col in set_columns:
+        val = set_data.get(col)
+        if col == "released_at":
+            processed[col] = parse_date(val)
+        else:
+            processed[col] = val
+    return processed
+
+def upsert_sets_batch(data_batch):
+    """Execute the UPSERT for a batch of set rows."""
+    update_columns = [col for col in set_columns if col != "id"]
+    set_clause = ", ".join(f"{col} = EXCLUDED.{col}" for col in update_columns)
+    sql = f"""
+    INSERT INTO sets ({', '.join(set_columns)}) VALUES %s
+    ON CONFLICT (id) DO UPDATE SET {set_clause}
+    """
+    psycopg2.extras.execute_values(
+        cursor, sql, data_batch, template=None, page_size=1000
+    )
+    conn.commit()
+
+def import_sets():
+    """
+    Downloads the sets data from Scryfall, processes each set,
+    and performs a bulk UPSERT into the 'sets' table.
+    """
+    sets_url = "https://api.scryfall.com/sets"
+    print(f"Downloading sets data from {sets_url} ...")
+    resp = requests.get(sets_url, timeout=10)
+    if resp.status_code != 200:
+        raise RuntimeError(f"Failed to download sets data: {resp.status_code}")
+    sets_json = resp.json()
+    sets_list = sets_json.get("data", [])
+    print(f"Processing {len(sets_list)} sets...")
+
+    batch = []
+    for set_item in sets_list:
+        processed = process_set(set_item)
+        # Ensure we have an 'id'
+        if not processed.get("id"):
+            print(f"Warning: Set missing 'id', skipping {processed.get('name')}")
+            continue
+        row = tuple(processed.get(col) for col in set_columns)
+        batch.append(row)
+    if batch:
+        upsert_sets_batch(batch)
+        print(f"Upserted {len(batch)} sets into the database.")
+
+# ---------------------------
+# DOWNLOAD FUNCTIONS
+# ---------------------------
 def download_latest_json(json_file):
     """
-    Checks the Scryfall bulk-data API for the desired JSON file (Oracle Cards or Unique Artwork).
-    If the local file is missing or its modification time is older than the server's updated_at,
-    downloads the file from the provided download_uri. The file's modification time is then updated.
+    Checks the Scryfall bulk-data API for the desired JSON file.
+    If the file is missing or outdated, it downloads the file.
+    Supports bulk types "oracle_cards", "unique_artwork", and "all_prints".
+    
+    Note: When BULK_DATA_TYPE is set to "all_prints", the script will search for the bulk data
+    object with type "all_cards" from Scryfall.
     """
     bulk_api = "https://api.scryfall.com/bulk-data"
     print(f"Querying Scryfall bulk-data API for the latest {BULK_DATA_TYPE} JSON URL...")
+
     resp = requests.get(bulk_api, timeout=10)
     if resp.status_code != 200:
         raise RuntimeError(f"Failed to query bulk-data API: {resp.status_code}")
     bulk_data = resp.json().get("data", [])
-    desired_bulk = next((item for item in bulk_data if item.get("type") == BULK_DATA_TYPE), None)
+
+    # Map "all_prints" to the Scryfall bulk data type "all_cards"
+    desired_type = BULK_DATA_TYPE
+    if BULK_DATA_TYPE == "all_prints":
+        desired_type = "all_cards"
+
+    desired_bulk = next((item for item in bulk_data if item.get("type") == desired_type), None)
     if not desired_bulk:
         raise RuntimeError(f"{BULK_DATA_TYPE} bulk data not found")
     
@@ -231,47 +335,46 @@ def download_latest_json(json_file):
     os.utime(json_file, (mod_time, mod_time))
     print(f"Downloaded and saved as {json_file} with mtime set to {server_updated_at.isoformat()}")
 
+# ---------------------------
+# MAIN FUNCTION
+# ---------------------------
 def main():
-    """Main function to download, process, and import card data into the database."""
+    """Main function to download, process, and import card and set data into the database."""
+    # Import cards
     json_file = f"scryfall-{BULK_DATA_TYPE}.json"
     download_latest_json(json_file)
 
-    data = []
-    print("Streaming and processing JSON file...")
+    batch_size = 10000
+    batch = []
+    total_count = 0
+    print("Streaming and processing card JSON file...")
     with open(json_file, 'rb') as f:
         cards = ijson.items(f, 'item')
-        count = 0
         for card in cards:
             processed = process_card(card)
+            # Skip any card that lacks an 'id'
+            if not processed.get("id"):
+                print(f"Warning: card missing 'id', skipping {processed.get('name')}")
+                continue
             row = tuple(processed.get(col) for col in columns)
-            data.append(row)
-            count += 1
-            if count % 10000 == 0:
-                print(f"Processed {count} cards...")
-    print(f"Total cards processed: {count}")
+            batch.append(row)
+            total_count += 1
 
-    print("Inserting data into database...")
-    update_columns = [col for col in columns if col != "id"]
-    set_clause = ", ".join(f"{col} = EXCLUDED.{col}" for col in update_columns)
-    where_clause = (
-        " WHERE (" +
-        ", ".join("cards." + col for col in update_columns) +
-        ") IS DISTINCT FROM (" +
-        ", ".join(f"EXCLUDED.{col}" for col in update_columns) +
-        ")"
-    )
-    
-    sql = f"""
-    INSERT INTO cards ({', '.join(columns)}) VALUES %s
-    ON CONFLICT (id) DO UPDATE SET {set_clause}{where_clause}
-    """
-    psycopg2.extras.execute_values(
-        cursor, sql, data, template=None, page_size=1000
-    )
-    conn.commit()
+            if total_count % batch_size == 0:
+                print(f"Processing batch of {batch_size} cards (total processed: {total_count})...")
+                upsert_batch(batch)
+                batch = []
+    # Process any remaining rows for cards
+    if batch:
+        print(f"Processing final batch of {len(batch)} cards...")
+        upsert_batch(batch)
+    print(f"Card data import complete. Total cards processed: {total_count}")
+
+    # Import sets data
+    import_sets()
+
     cursor.close()
     conn.close()
-    print("Data import complete.")
 
 if __name__ == "__main__":
     main()

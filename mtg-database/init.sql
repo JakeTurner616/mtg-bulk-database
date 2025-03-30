@@ -101,3 +101,46 @@ CREATE TABLE cards (
     purchase_uris JSONB,
     card_faces JSONB
 );
+
+-- Drop the sets table if it exists
+DROP TABLE IF EXISTS sets;
+
+-- Create the sets table
+CREATE TABLE sets (
+    id UUID PRIMARY KEY,             -- Using the unique Scryfall set id as the primary key
+    code TEXT,
+    name TEXT,
+    uri TEXT,
+    scryfall_uri TEXT,
+    search_uri TEXT,
+    released_at DATE,
+    set_type TEXT,
+    card_count INTEGER,
+    parent_set_code TEXT,
+    digital BOOLEAN,
+    nonfoil_only BOOLEAN,
+    foil_only BOOLEAN,
+    icon_svg_uri TEXT
+);
+
+-- Index for quick lookup by oracle_id
+CREATE INDEX idx_cards_oracle_id ON cards(oracle_id);
+
+-- JSONB indexes to speed up containment searches for keywords and colors
+CREATE INDEX idx_cards_keywords ON cards USING gin(keywords);
+CREATE INDEX idx_cards_colors ON cards USING gin(colors);
+
+-- Enable the pg_trgm extension for improved text search performance
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+-- Trigram indexes for faster ILIKE searches on name and oracle_text
+CREATE INDEX idx_cards_name_trgm ON cards USING gin(name gin_trgm_ops);
+CREATE INDEX idx_cards_oracle_text_trgm ON cards USING gin(oracle_text gin_trgm_ops);
+
+-- B-tree index for numeric comparisons on cmc
+CREATE INDEX idx_cards_cmc ON cards(cmc);
+
+-- 
+CREATE INDEX cards_text_idx ON cards USING GIN (
+  to_tsvector('english', coalesce(name, '') || ' ' || coalesce(oracle_text, ''))
+);

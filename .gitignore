@@ -2,3 +2,5 @@ venv
 /mtg-database/postgres/
 scryfall-cards.json
 scryfall-oracle_cards.json
+scryfall-all_prints.json
+scryfall-unique_artwork.json
